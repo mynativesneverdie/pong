@@ -1,5 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <termios.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define FIELD_HEIGHT 27
 #define FIELD_WIDTH 82
@@ -26,6 +31,29 @@ int scoreDisplay(int *scPlayer1, int *scPlayer2,
                   int *ball1_x, int *ball1_y);
 void clearDisplay(void);
 
+struct termios	*g_saved_term;
+
+void prepareTerminal(struct termios	*term) {
+    g_saved_term = (struct termios *)malloc(sizeof(struct termios));
+    term = (struct termios *)malloc(sizeof(struct termios));
+    tcgetattr(0, g_saved_term);
+    memcpy(term, g_saved_term, sizeof(struct termios));
+	term->c_lflag &= ~(ICANON | ECHO);
+	term->c_cc[VMIN] = 1;
+	term->c_cc[VTIME] = 0;
+    tcsetattr(0, TCSAFLUSH, term);
+}
+
+void	sigint_handler(int	sig)
+{
+	if (sig > 0)
+	{
+		tcsetattr(0, TCSAFLUSH, g_saved_term);
+        exit(0);
+	}
+}
+
+
 int main(void) {
     int player_1_Y = PLAYER1_START_Y;  // players position
     int player_2_Y = PLAYER2_START_Y;
@@ -38,7 +66,13 @@ int main(void) {
     int score_Player_1 = 0;  // SCORE
     int score_Player_2 = 0;
 
-     while (TRUE) {
+    
+	struct termios	*term;
+
+    prepareTerminal(term);
+    signal(SIGINT, sigint_handler);
+    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
+    while (TRUE) {
             screenRendering(&player_1_Y, &player_2_Y,
                             &ball_X, &ball_Y,
                             &score_Player_1, &score_Player_2);
@@ -52,7 +86,8 @@ int main(void) {
                              &ball_X, &ball_Y)) {
                 break;
             }
-     }
+    }
+    tcsetattr(0, TCSAFLUSH, g_saved_term);
     return 0;
 }
 
@@ -100,6 +135,7 @@ void screenRendering(const int *player_1_Y, const int *player_2_Y,
         }
         printf("\n");
     }
+    usleep(100000);
 }
 
 void playerMove(int *player_1_Y, int *player_2_Y) {
