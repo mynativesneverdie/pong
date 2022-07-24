@@ -5,7 +5,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 
+#define USLEEP_TIME 100000
 #define FIELD_HEIGHT 27
 #define FIELD_WIDTH 82
 #define PERSON_SIZE 3
@@ -20,122 +22,137 @@
 #define TRUE 1
 #define FALSE 0
 
-void screenRendering(const int *player_1_Y, const int *player_2_Y,
-                     const int *ball1_x, const int *ball1_y,
-                     int *scPlayer1, int *scPlayer2);
-void playerMove(int *player_1_Y, int *player_2_Y);
-void moveBall(int *ball1_x, int *ball1_y,
-              int *vector_X, int *vector_Y,
-              const int *player_1_Y, const int *player_2_Y);
-int scoreDisplay(int *scPlayer1, int *scPlayer2,
-                  int *ball1_x, int *ball1_y);
-void clearDisplay(void);
-
-struct termios	*g_saved_term;
-
-void prepareTerminal(struct termios	*term) {
-    g_saved_term = (struct termios *)malloc(sizeof(struct termios));
-    term = (struct termios *)malloc(sizeof(struct termios));
-    tcgetattr(0, g_saved_term);
-    memcpy(term, g_saved_term, sizeof(struct termios));
-	term->c_lflag &= ~(ICANON | ECHO);
-	term->c_cc[VMIN] = 1;
-	term->c_cc[VTIME] = 0;
-    tcsetattr(0, TCSAFLUSH, term);
-}
-
-void	sigint_handler(int	sig)
+typedef struct  s_state
 {
-	if (sig > 0)
-	{
-		tcsetattr(0, TCSAFLUSH, g_saved_term);
-        exit(0);
-	}
-}
+	int player_1_Y; // players position
+    int player_2_Y;
 
+    int ball_X;     // ball position and direction
+    int ball_Y;
+    int vector_X;
+    int vector_Y;
+
+    int score_Player_1;  // SCORE
+    int score_Player_2;
+}               t_state;
+
+void * screenRendering(void * state);
+void playerMove(int *player_1_Y, int *player_2_Y);
+void * moveBall(void * state);
+int scoreDisplay(t_state * state);
+void clearDisplay(void);
+void initState(t_state *state);
+void prepareTerminal(struct termios	*term, struct termios *saved_term);
+void createBallThread(t_state * state, pthread_t *id);
+void createRenderingThread(t_state * state, pthread_t *id);
+
+int g_run_program = 1;
 
 int main(void) {
-    int player_1_Y = PLAYER1_START_Y;  // players position
-    int player_2_Y = PLAYER2_START_Y;
+    struct termios	term;
+    struct termios	saved_term;
+    t_state         state;
+    pthread_t       id_moveBall_thread;
+    pthread_t       id_rendering_thread;
 
-    int ball_X = BALL_START_X;  // ball position and direction
-    int ball_Y = BALL_START_Y;
-    int vector_X = -1;
-    int vector_Y = 1;
+    initState(&state);
+    prepareTerminal(&term, &saved_term);
+    createRenderingThread(&state, &id_rendering_thread);
+    createBallThread(&state, &id_moveBall_thread);
 
-    int score_Player_1 = 0;  // SCORE
-    int score_Player_2 = 0;
-
-    
-	struct termios	*term;
-
-    prepareTerminal(term);
-    signal(SIGINT, sigint_handler);
-    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
-    while (TRUE) {
-            screenRendering(&player_1_Y, &player_2_Y,
-                            &ball_X, &ball_Y,
-                            &score_Player_1, &score_Player_2);
-            playerMove(&player_1_Y, &player_2_Y);
-            moveBall(&ball_X, &ball_Y,
-                     &vector_X, &vector_Y,
-                     &player_1_Y, &player_2_Y);
-            clearDisplay();
-
-            if (scoreDisplay(&score_Player_1, &score_Player_2,
-                             &ball_X, &ball_Y)) {
-                break;
-            }
+    while (g_run_program) {
+        playerMove(&state.player_1_Y, &state.player_2_Y);
+        if (scoreDisplay(&state))
+            break;
     }
-    tcsetattr(0, TCSAFLUSH, g_saved_term);
+    pthread_join(id_moveBall_thread, NULL);
+    pthread_join(id_rendering_thread, NULL);
+    tcsetattr(0, TCSAFLUSH, &saved_term);
     return 0;
 }
 
-void screenRendering(const int *player_1_Y, const int *player_2_Y,
-                    const int *ball1_x, const int *ball1_y,
-                    int *scPlayer1, int *scPlayer2) {
-    for (int y = 0; y < PERSON_SIZE; ++y) {  // rendering score-bar
-        for (int x = 0; x < FIELD_WIDTH; ++x) {
-            if ((y == 0 && x != 0 && x != FIELD_WIDTH - 1) ||
-                (y == PERSON_SIZE - 1 && x != 0 && x != FIELD_WIDTH - 1)) {
-                printf("#");
-            } else if (((x == 0 && y != 0 && y != 2) ||
-                        (x == FIELD_WIDTH - 1 && y != 0 && y != 2))) {
-                printf("|");
-            } else if (x == POS_SCORE_CHARACTERS) {
-                printf("Player 1: %d | Player 2: %d", *scPlayer1, *scPlayer2);
-            }  else if (y == 1 && x < FIELD_WIDTH - POS_SCORE_CHARACTERS) {
-                printf(" ");
-            } else if (y != 1) {
-                printf(" ");
-            }
-        }
-        printf("\n");
-    }
+void initState(t_state *state) {
+    state->player_1_Y = PLAYER1_START_Y;
+    state->player_2_Y = PLAYER2_START_Y;
+    state->ball_X = BALL_START_X;
+    state->ball_Y = BALL_START_Y;
+    state->vector_X = -1;
+    state->vector_Y = 1;
+    state->score_Player_1 = 0;
+    state->score_Player_2 = 0;
+}
 
-    for (int y = 0; y < FIELD_HEIGHT; ++y) {  // rendering field + ball + players
-        for (int x = 0; x < FIELD_WIDTH; ++x) {
-            if ((x == PLAYER1_DEFAULT_X &&
-                (y == *player_1_Y - 1 || y == *player_1_Y || y == *player_1_Y + 1)) ||
-                (x == PLAYER2_DEFAULT_X &&
-                (y == *player_2_Y - 1 || y == *player_2_Y || y == *player_2_Y + 1))) {
-                printf("|");
-            } else if (x == *ball1_x && y == *ball1_y) {
-                printf("o");
-            } else if ((y == 0 && x != 0 && x != FIELD_WIDTH - 1) ||
-                        (y == FIELD_HEIGHT - 1 && x != 0 && x != FIELD_WIDTH - 1)) {
-                printf("-");
-            } else if ((x == 0 && y != 0 && y != FIELD_HEIGHT - 1) ||
-                        (x == FIELD_WIDTH - 1 && y != 0 && y != FIELD_HEIGHT - 1) ||
-                        (x == FIELD_WIDTH / 2)) {
-                printf("|");
-            } else {
-                printf(" ");
+void fatalThreadCreating(void) {
+    printf("Can't create thread\n");
+    exit(1);
+}
+
+void createBallThread(t_state * state, pthread_t *id) {
+    int ret = pthread_create(id, NULL, moveBall, state);
+    if (ret != 0)
+        fatalThreadCreating();
+}
+
+void createRenderingThread(t_state * state, pthread_t *id) {
+    int ret = pthread_create(id, NULL, screenRendering, state);
+    if (ret != 0)
+        fatalThreadCreating();
+}
+
+void * screenRendering(void * s) {
+
+    const t_state * state = s;
+
+    while (g_run_program) {
+
+        usleep(USLEEP_TIME);
+        clearDisplay();
+
+        // rendering score-bar
+        for (int y = 0; y < PERSON_SIZE; ++y) {
+            for (int x = 0; x < FIELD_WIDTH; ++x) {
+                if ((y == 0 && x != 0 && x != FIELD_WIDTH - 1) ||
+                    (y == PERSON_SIZE - 1 && x != 0 && x != FIELD_WIDTH - 1)) {
+                    printf("#");
+                } else if (((x == 0 && y != 0 && y != 2) ||
+                            (x == FIELD_WIDTH - 1 && y != 0 && y != 2))) {
+                    printf("|");
+                } else if (x == POS_SCORE_CHARACTERS) {
+                    printf("Player 1: %d | Player 2: %d", state->score_Player_1, state->score_Player_2);
+                }  else if (y == 1 && x < FIELD_WIDTH - POS_SCORE_CHARACTERS) {
+                    printf(" ");
+                } else if (y != 1) {
+                    printf(" ");
+                }
             }
+            printf("\n");
         }
-        printf("\n");
+
+        // rendering field + ball + players
+        for (int y = 0; y < FIELD_HEIGHT; ++y) {
+            for (int x = 0; x < FIELD_WIDTH; ++x) {
+                if ((x == PLAYER1_DEFAULT_X &&
+                    (y == state->player_1_Y - 1 || y == state->player_1_Y || y == state->player_1_Y + 1)) ||
+                    (x == PLAYER2_DEFAULT_X &&
+                    (y == state->player_2_Y - 1 || y == state->player_2_Y|| y == state->player_2_Y + 1))) {
+                    printf("|");
+                } else if (x == state->ball_X && y == state->ball_Y) {
+                    printf("o");
+                } else if ((y == 0 && x != 0 && x != FIELD_WIDTH - 1) ||
+                            (y == FIELD_HEIGHT - 1 && x != 0 && x != FIELD_WIDTH - 1)) {
+                    printf("-");
+                } else if ((x == 0 && y != 0 && y != FIELD_HEIGHT - 1) ||
+                            (x == FIELD_WIDTH - 1 && y != 0 && y != FIELD_HEIGHT - 1) ||
+                            (x == FIELD_WIDTH / 2)) {
+                    printf("|");
+                } else {
+                    printf(" ");
+                }
+            }
+            printf("\n");
+        }
     }
-    usleep(100000);
+    return (NULL);
 }
 
 void playerMove(int *player_1_Y, int *player_2_Y) {
@@ -148,42 +165,46 @@ void playerMove(int *player_1_Y, int *player_2_Y) {
     }
 }
 
-void moveBall(int *ball1_x, int *ball1_y,
-              int *vector_X, int *vector_Y,
-                const int *player_1_Y, const int *player_2_Y) {  // constants function - for all.
-    if (*ball1_y == 1 || *ball1_y == FIELD_HEIGHT - 2) {  // if move_ball 1 or move_ball 80
-        *vector_Y = -(*vector_Y);
-    }
-    if (*ball1_x == PLAYER1_DEFAULT_X + 1 &&  // move from player1
-        (*ball1_y == *player_1_Y - 1 || *ball1_y == *player_1_Y  || *ball1_y == *player_1_Y + 1)) {
-        *vector_X = -(*vector_X);
-    }
-    if (*ball1_x == PLAYER2_DEFAULT_X - 1 &&  // move from player2
-        (*ball1_y == *player_2_Y - 1 || *ball1_y == *player_2_Y  || *ball1_y == *player_2_Y + 1)) {
-        *vector_X = -(*vector_X);
-    }
+void * moveBall(void * s) {  // constants function - for all
+    t_state * state = s;
 
-    *ball1_y += *vector_Y;
-    *ball1_x += *vector_X;
+    while (g_run_program) {
+        usleep(USLEEP_TIME);
+
+        if (state->ball_Y == 1 || state->ball_Y == FIELD_HEIGHT - 2) {  // if move_ball 1 or move_ball 80
+            state->vector_Y *= -1;
+        }
+        if (state->ball_X == PLAYER1_DEFAULT_X + 1 &&  // move from player1
+            (state->ball_Y == state->player_1_Y - 1 || state->ball_Y == state->player_1_Y  || state->ball_Y == state->player_1_Y + 1)) {
+            state->vector_X *= -1;
+        }
+        if (state->ball_X == PLAYER2_DEFAULT_X - 1 &&  // move from player2
+            (state->ball_Y == state->player_2_Y - 1 || state->ball_Y == state->player_2_Y  || state->ball_Y == state->player_2_Y + 1)) {
+            state->vector_X *= -1;
+        }
+
+        state->ball_Y += state->vector_Y;
+        state->ball_X += state->vector_X;
+    }
+    return (NULL);
 }
 
-int scoreDisplay(int *scPlayer1, int *scPlayer2,
-                 int *ball1_x, int *ball1_y) {
-    if (*ball1_x < 2) {
-        *scPlayer2 += 1;
-        *ball1_x = BALL_START_X;
-        *ball1_y = BALL_START_Y;
+int scoreDisplay(t_state * state) {
+    if (state->ball_X < 2) {
+        state->score_Player_2 += 1;
+        state->ball_X = BALL_START_X;
+        state->ball_Y = BALL_START_Y;
     }
-    if (*ball1_x > FIELD_WIDTH - 3) {
-        *scPlayer1 += 1;
-        *ball1_x = BALL_START_X;
-        *ball1_y = BALL_START_Y;
+    if (state->ball_X > FIELD_WIDTH - 3) {
+        state->score_Player_1 += 1;
+        state->ball_X = BALL_START_X;
+        state->ball_Y = BALL_START_Y;
     }
-    if (*scPlayer1 == MAX_SCORE_TO_WIN) {
-        printf("\nGoodGame_GLHF!!! PLAYER 1 WINS.\n%d - %d\n", *scPlayer1, *scPlayer2);
+    if (state->score_Player_1 == MAX_SCORE_TO_WIN) {
+        printf("\nGoodGame_GLHF!!! PLAYER 1 WINS.\n%d - %d\n", state->score_Player_1, state->score_Player_2);
         return TRUE;
-    } else if (*scPlayer2 == MAX_SCORE_TO_WIN) {
-        printf("\nGoodGame_GLHF!!! PLAYER 2 WINS.\n%d - %d\n", *scPlayer2, *scPlayer1);
+    } else if (state->score_Player_2 == MAX_SCORE_TO_WIN) {
+        printf("\nGoodGame_GLHF!!! PLAYER 2 WINS.\n%d - %d\n", state->score_Player_2, state->score_Player_1);
         return TRUE;
     }
     return FALSE;
@@ -191,4 +212,23 @@ int scoreDisplay(int *scPlayer1, int *scPlayer2,
 
 void clearDisplay(void) {
     system("clear");
+}
+
+void	sigint_handler(int	sig)
+{
+	if (sig > 0)
+	{
+		g_run_program = 0;
+	}
+}
+
+void prepareTerminal(struct termios	*term, struct termios *saved_term) {
+    tcgetattr(0, saved_term);
+    memcpy(term, saved_term, sizeof(struct termios));
+	term->c_lflag &= ~(ICANON | ECHO);
+	term->c_cc[VMIN] = 1;
+	term->c_cc[VTIME] = 0;
+    tcsetattr(0, TCSAFLUSH, term);
+    signal(SIGINT, sigint_handler);
+    fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
 }
